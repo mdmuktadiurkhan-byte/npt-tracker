@@ -46,7 +46,7 @@ export default function MachineDashboard() {
     <div className="min-h-screen bg-gray-950 text-slate-100 p-4 font-sans selection:bg-indigo-500">
       <header className="mb-6 flex justify-between items-center max-w-[1800px] mx-auto border-b border-gray-800 pb-3">
         <h1 className="text-xl font-bold tracking-tight text-indigo-400">
-          GMS NPT Tracker <span className="text-xs text-gray-500 font-normal">(Total: {machines.length})</span>
+          GMS NPT Tracker oo <span className="text-xs text-gray-500 font-normal">(Total: {machines.length})</span>
         </h1>
       </header>
 
