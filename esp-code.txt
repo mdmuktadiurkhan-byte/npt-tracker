@@ -1,0 +1,214 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h> // HTTPS/Vercel সাপোর্ট করার জন্য যোগ করা হয়েছে
+#include "EmonLib.h"
+#include <IRremote.hpp> 
+
+// Wi-Fi ক্রেডেনশিয়ালস
+const char* ssid = "Knitting_Machine";         
+const char* password = "Gms12345";  
+
+// API URL
+const char* apiUrl = "https://npt-tracker.vercel.app/api/status";
+
+// মেশিন নম্বর
+const String machineNumber = "23";
+
+// পিন কনফিগারেশন
+#define CT_PIN 34
+#define IR_RECEIVER_PIN 14  // IR রিসিভার ডাটা পিন
+#define MOS_PIN 13           // MOS মডিউল / হর্ন কন্ট্রোল পিন
+
+// নো-লোড কারেন্ট বা নয়েজ ফিল্টারের জন্য ক্যালিব্রেশন ফ্যাক্টর
+#define CALIBRATION_FACTOR 20.0          
+EnergyMonitor emon1;
+
+// স্টেট ট্র্যাকিং ভেরিয়েবল (Multi-core sharing এর জন্য volatile)
+volatile bool currentState = false; 
+volatile bool lastState = false; 
+volatile int currentReasonNumber = 0; // রিমোটের বাটন নম্বর সেভ রাখার জন্য
+volatile bool isHornActive = false;   // হর্ন চালু আছে কি না ট্র্যাকিং করার জন্য
+volatile bool stateChanged = false;   
+volatile bool remotePressed = false;  // রিমোট প্রেস ট্র্যাক করার জন্য
+
+TaskHandle_t BackgroundTaskHandle = NULL;
+
+// রিমোটের বাটন কোড চেক করার ফাংশন
+int getReasonNumber(unsigned long code) {
+  switch (code) {
+    case 0xF30CFF00: return 1;
+    case 0xE718FF00: return 2;
+    case 0xA15EFF00: return 3;
+    case 0xF708FF00: return 4;
+    case 0xE31CFF00: return 5;
+    case 0xA55AFF00: return 6;
+    case 0xBD42FF00: return 7;
+    case 0xAD52FF00: return 8;
+    case 0xB54AFF00: return 9;
+    default: return 0;
+  }
+}
+
+// =======================================================
+// CORE 0: ব্যাকগ্রাউন্ডে কারেন্ট মাপবে এবং API-তে ডেটা পাঠাবে
+// =======================================================
+void BackgroundTask(void * pvParameters) {
+  unsigned long lastPrintTime = 0;
+  
+  for(;;) {
+    // ১. কারেন্ট রিডিং নেওয়া
+    double Irms = emon1.calcIrms(1480); 
+    if (Irms < 5) { 
+      Irms = 0.0;
+    }
+
+    // প্রতি ৫০০ মিলি-সেকেন্ড পর পর সিরিয়াল মনিটরে কারেন্ট প্রিন্ট করা
+    if (millis() - lastPrintTime >= 500) {
+      Serial.print("Current: ");
+      Serial.print(Irms, 2); 
+      Serial.println(" A");
+      lastPrintTime = millis();
+    }
+
+    // বর্তমান অবস্থা নির্ধারণ (০.৫ অ্যাম্পিয়ারের বেশি হলে true)
+    currentState = (Irms > 0.5);
+
+    // ২. স্টেট চেঞ্জ হলে বা রিমোট প্রেস হলে এপিআই কল করা
+    if (stateChanged || remotePressed) {
+      if (WiFi.status() == WL_CONNECTED) {
+        WiFiClientSecure client;
+        client.setInsecure(); // Vercel-এর SSL সার্টিফিকেট ভেরিফিকেশন বাইপাস করার জন্য
+
+        HTTPClient http;
+        http.begin(client, apiUrl);
+        http.addHeader("Content-Type", "application/json");
+        http.setTimeout(10000); // নেটওয়ার্ক স্লো থাকলেও যেন ড্রপ না করে (১০ সেকেন্ড টাইমআউট)
+
+        String jsonBody = "";
+        
+        if (remotePressed) {
+          // --- রিমোট চাপলে: শুধু reasonNumber এবং machineNumber যাবে (আগের কোডের লজিক) ---
+          jsonBody = "{\"machineNumber\":\"" + machineNumber + "\"" +
+                     ",\"reasonNumber\":\"" + String(currentReasonNumber) + "\"}";
+          
+          Serial.print("[Core 0] Sending Remote Update to API... Body: ");
+          remotePressed = false; // ফ্ল্যাগ রিসেট
+        } 
+        else if (stateChanged) {
+          // --- স্টেট চেঞ্জ হলে: statusValue সহ জেসন বডি জেনারেট হবে (আগের কোডের লজিক) ---
+          if (currentState) {
+            // মেশিন ON করার সময়: statusValue, machineNumber এবং reasonNumber ৩টিই যাবে
+            jsonBody = "{\"statusValue\":" + String("true") + 
+                       ",\"machineNumber\":\"" + machineNumber + "\"" +
+                       ",\"reasonNumber\":\"" + String(currentReasonNumber) + "\"}";
+          } else {
+            // মেশিন OFF হওয়ার সময়: machineNumber এবং statusValue: false পাঠানো হচ্ছে
+            jsonBody = "{\"statusValue\":" + String("false") + 
+                       ",\"machineNumber\":\"" + machineNumber + "\"}";
+          }
+          
+          Serial.print("[Core 0] Sending State Change Data to API... Body: ");
+          stateChanged = false; // ফ্ল্যাগ রিসেট
+        }
+        
+        Serial.println(jsonBody);
+
+        int httpResponseCode = http.POST(jsonBody);
+        
+        if (httpResponseCode > 0) {
+          String response = http.getString();
+          Serial.printf("[Core 0] HTTP Response code: %d\n", httpResponseCode);
+          Serial.println(response);
+        } else {
+          Serial.printf("[Core 0] POST failed, error code: %d, error: %s\n", httpResponseCode, http.errorToString(httpResponseCode).c_str());
+        }
+        http.end(); 
+      } else {
+        Serial.println("[Core 0] WiFi Disconnected! Trying to reconnect...");
+        WiFi.begin(ssid, password);
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10)); // ওয়াচডগ টাইমার এবং কোরের স্ট্যাবিলিটির জন্য সামান্য ডিলে
+  }
+}
+
+// =======================================================
+// CORE 1: মেইন লুপ (রিমোট রিড এবং হর্ন নিয়ন্ত্রণ করবে সম্পূর্ণ ফ্রিলি)
+// =======================================================
+void setup() {
+  Serial.begin(115200);
+  emon1.current(CT_PIN, CALIBRATION_FACTOR);
+
+  // MOS এবং IR রিসিভার সেটআপ
+  pinMode(MOS_PIN, OUTPUT);
+  digitalWrite(MOS_PIN, LOW); // শুরুতে হর্ন বন্ধ থাকবে
+  IrReceiver.begin(IR_RECEIVER_PIN, ENABLE_LED_FEEDBACK); 
+
+  // Wi-Fi কানেক্ট করা
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to Wi-Fi!");
+
+  // কারেন্ট সেন্সিং এবং এপিআই নেটওয়ার্কিং-এর ভারী কাজটিকে Core 0-তে পাঠানো হলো
+  xTaskCreatePinnedToCore(
+    BackgroundTask,            
+    "BackgroundTask",           
+    10000,               
+    NULL,                
+    1,                    
+    &BackgroundTaskHandle,      
+    0                    
+  );
+}
+
+void loop() {
+  // ১. রিমোট সিগন্যাল রিড করা (কোনো ব্লকিং কাজ না থাকায় এখন চাপার সাথে সাথে কাজ করবে)
+  if (IrReceiver.decode()) {
+    unsigned long irCode = IrReceiver.decodedIRData.decodedRawData;
+    int pressedButton = getReasonNumber(irCode);
+    
+    if (pressedButton != 0) { 
+      currentReasonNumber = pressedButton; 
+      digitalWrite(MOS_PIN, LOW); // হর্ন সাথে সাথে বন্ধ হবে
+      isHornActive = false;
+      remotePressed = true; // Core 0 কে এপিআই কল করার জন্য সিগন্যাল দেবে
+      
+      Serial.printf("[Core 1] Remote Pressed! Reason updated to: %d\n", currentReasonNumber);
+    }
+    IrReceiver.resume(); 
+  }
+
+  // ২. হর্ন নিয়ন্ত্রণ লজিক (আগের কোডের লজিক অনুসারে)
+  if (!currentState) { 
+    // মেশিন বন্ধ থাকলে যদি হর্ন আগে থেকে অন না করা হয়ে থাকে, তবে হর্ন বাজবে
+    if (!isHornActive && currentReasonNumber == 0) {
+      digitalWrite(MOS_PIN, HIGH); // হর্ন চালু (MOS High)
+      isHornActive = true;
+      Serial.println("[Core 1] Machine STOPPED. Horn ON.");
+    }
+  } else {
+    // মেশিন যদি চালু হয়ে যায়, তবে হর্ন এবং রিজন রিসেট হবে
+    if (isHornActive) {
+      digitalWrite(MOS_PIN, LOW); 
+      isHornActive = false;
+    }
+  }
+
+  // ৩. স্টেট পরিবর্তন (ON/OFF) ট্র্যাকিং লজিক
+  if (currentState != lastState) {
+    stateChanged = true; 
+
+    if (!currentState) {
+      // আগের কোডের লজিক: নতুন করে মেশিন অফ হওয়ার সাথে সাথে আগের রিজন ০ করে দেওয়া হলো
+      currentReasonNumber = 0; 
+    }
+    lastState = currentState; 
+  }
+
+  delay(1); // লুপ ফ্রি রাখার জন্য ছোট ডিলে
+}
