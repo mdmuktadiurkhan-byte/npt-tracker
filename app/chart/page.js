@@ -1,306 +1,275 @@
-"use client";
+'use client';
 
 import React, { useState, useEffect } from 'react';
-import dynamic from 'next/dynamic';
 
-// Server-Side Rendering (SSR) ডিজেবল করে ApexCharts ইমপোর্ট করা হচ্ছে
-const Chart = dynamic(() => import('react-apexcharts'), { ssr: false });
-
-// ১০টি রিজন (N/A এবং No Operation Data সহ) এবং কালার ম্যাপিং
-const REASON_MAP = {
-  "0": { name: "Machine On", color: "#00E396" },            // Green
-  "1": { name: "Maintenance", color: "#008FFB" },           // Blue
-  "2": { name: "Needle Breakage", color: "#FEB019" },       // Orange
-  "3": { name: "No Order / No Program", color: "#775DD0" },   // Purple
-  "4": { name: "No Yarn", color: "#FF4560" },               // Red
-  "5": { name: "Power", color: "#00D9E9" },                 // Cyan
-  "6": { name: "Program Change", color: "#A5A5A5" },        // Gray
-  "7": { name: "Roll Cutting", color: "#E2C044" },          // Yellow
-  "8": { name: "Yarn Breakage", color: "#FF00FF" },         // Magenta
-  "9": { name: "N/A", color: "#FF1A1A" },                   // Dark Red
-  "10": { name: "No operation data", color: "#FFAAAA" }     // Light Pink (ফাঁকা ব্লকের জন্য)
+// স্ট্যাটাস এবং কালার লেজেন্ডের ম্যাপিং
+const STATUS_MAP = {
+  "0": { label: "Machine On", color: "#00E676" }, // উজ্জ্বল সবুজ
+  "1": { label: "Maintenance", color: "#2979FF" }, // নীল
+  "2": { label: "Needle Breakage", color: "#FFAB91" }, // হালকা কমলা
+  "3": { label: "No Order / No Program", color: "#A5D6A7" }, // ধূসর সবুজ
+  "4": { label: "No Yarn", color: "#FFE082" }, // হালকা হলুদ
+  "5": { label: "Power", color: "#00E5FF" }, // সায়ান/আকাশি
+  "6": { label: "Program Change", color: "#C5CAE9" }, // হালকা বেগুনী
+  "7": { label: "Roll Cutting", color: "#E6EE9C" }, // লেবু সবুজ
+  "9": { label: "Yarn Breakage", color: "#E040FB" }, // বেগুনী
+  "8": { label: "N/A", color: "#FF1744" }, // লাল
 };
 
-export default function MachineTracker() {
+export default function KnittingMachineTracker() {
+  const [timelineData, setTimelineData] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [machineNumber, setMachineNumber] = useState('23');
-  const [targetDate, setTargetDate] = useState('2026-06-30'); 
-  const [chartData, setChartData] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [targetDate, setTargetDate] = useState('2026-06-30');
 
-  // রাত ১২:০০ থেকে রাত ১১:৫৯ পর্যন্ত টাইমস্ট্যাম্প
-  const getXAxisRange = () => {
-    const minTime = new Date(`${targetDate}T00:00:00`).getTime();
-    const maxTime = new Date(`${targetDate}T23:59:59`).getTime();
-    return { minTime, maxTime };
-  };
-
-  const { minTime, maxTime } = getXAxisRange();
-
-  // ডাটার মাঝখানের ফাঁকা (সাদা) অংশগুলোকে "No operation data" দিয়ে ভরাট করার ফাংশন
-  const fillTimelineGaps = (rawBlocks, minT, maxT) => {
-    if (rawBlocks.length === 0) {
-      // যদি সারাদিনে কোনো ডাটায় না থাকে, তবে পুরো ২৪ ঘণ্টাই No operation data দেখাবে
-      return [{
-        x: `M-${machineNumber}`,
-        y: [minT, maxT],
-        fillColor: REASON_MAP["10"].color,
-        reasonName: REASON_MAP["10"].name
-      }];
-    }
-
-    const fullTimeline = [];
-    let currentTime = minT;
-
-    rawBlocks.forEach((block) => {
-      const blockStart = new Date(block.startTime).getTime();
-      const blockEnd = new Date(block.endTime).getTime();
-      const reasonConfig = REASON_MAP[block.reasonNumber] || REASON_MAP["9"];
-
-      // যদি কারেন্ট টাইম থেকে ব্লকের শুরুর সময়ের মাঝে গ্যাপ থাকে, সেখানে No Operation Data বসবে
-      if (blockStart > currentTime + 1000) { 
-        fullTimeline.push({
-          x: `M-${block.machineNumber}`,
-          y: [currentTime, blockStart],
-          fillColor: REASON_MAP["10"].color,
-          reasonName: REASON_MAP["10"].name
-        });
-      }
-
-      // আসল ডাটা ব্লকটি পুশ করা
-      fullTimeline.push({
-        x: `M-${block.machineNumber}`,
-        y: [blockStart, blockEnd],
-        fillColor: reasonConfig.color,
-        reasonName: reasonConfig.name
-      });
-
-      currentTime = blockEnd;
-    });
-
-    // শেষ ব্লকের পর থেকে রাত ১১:৫৯ পর্যন্ত যদি গ্যাপ থাকে
-    if (currentTime < maxT - 1000) {
-      fullTimeline.push({
-        x: `M-${machineNumber}`,
-        y: [currentTime, maxT],
-        fillColor: REASON_MAP["10"].color,
-        reasonName: REASON_MAP["10"].name
-      });
-    }
-
-    return fullTimeline;
-  };
-
-  const fetchTimelineData = async () => {
-    setLoading(true);
-    setError('');
+  // ১. এপিআই থেকে ডেটা ফেচ করার ফাংশন
+  const fetchTrackerData = async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
       const res = await fetch(`/api/reason?machine=${machineNumber}&date=${targetDate}`);
-      const result = await res.json();
+      const json = await res.json();
+      
+      if (json.success && json.data) {
+        const processedBlocks = [];
+        const apiData = json.data;
 
-      if (result.success && result.data) {
-        // গ্যাপ ফিলিং অ্যালগরিদম অ্যাপ্লাই করা হচ্ছে
-        const completedData = fillTimelineGaps(result.data, minTime, maxTime);
-        setChartData([{ data: completedData }]);
-      } else {
-        // API থেকে ডাটা না আসলেও পুরো স্ক্রিন ফাঁকা না রেখে "No operation data" দিয়ে ভরে রাখা হবে
-        const emptyDay = fillTimelineGaps([], minTime, maxTime);
-        setChartData([{ data: emptyDay }]);
+        for (let i = 0; i < apiData.length; i++) {
+          const current = apiData[i];
+          const startMs = new Date(current.startTime).getTime();
+          
+          let endMs = current.endTime ? new Date(current.endTime).getTime() : null;
+          let isLiveBlock = false;
+
+          // যদি এটি একদম শেষ ডাটা ব্লক হয়
+          if (i === apiData.length - 1) {
+            // ১. যদি endTime না থাকে 
+            // ২. অথবা যদি endTime আর startTime একবারে সমান হয় (অর্থাৎ এখনও রানিং কিন্তু এপিআই সেম টাইম দিচ্ছে)
+            // ৩. অথবা মেশিনটি সক্রিয় (isActive === true) থাকে
+            if (!current.endTime || endMs === startMs || current.isActive) {
+              endMs = new Date().getTime(); // বর্তমান রিয়েল টাইম অ্যাসাইন করা হচ্ছে
+              isLiveBlock = true;
+            }
+          } else {
+            // যদি পরের কোনো ব্লক থাকে, তবে তার startTime-ই হবে এই ব্লকের endTime
+            endMs = new Date(apiData[i + 1].startTime).getTime();
+          }
+
+          let duration = endMs - startMs;
+          if (duration <= 0) {
+            duration = 1000; 
+          }
+
+          processedBlocks.push({
+            ...current,
+            computedStartMs: startMs,
+            computedEndMs: endMs,
+            computedDurationMs: duration,
+            isLiveBlock: isLiveBlock, // রিয়েল-টাইম ট্র্যাকিং ফ্ল্যাগ
+            color: current.isActive ? STATUS_MAP["0"].color : (STATUS_MAP[current.reasonNumber]?.color || "#FFAB91")
+          });
+        }
+
+        setTimelineData(processedBlocks);
       }
-    } catch (err) {
-      setError('সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।');
-      const emptyDay = fillTimelineGaps([], minTime, maxTime);
-      setChartData([{ data: emptyDay }]);
+    } catch (error) {
+      console.error("Error fetching data:", error);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
+  // ২. ইনিশিয়াল লোড এবং ইনপুট চেঞ্জের জন্য এফেক্ট
   useEffect(() => {
-    fetchTimelineData();
+    fetchTrackerData(true);
   }, [machineNumber, targetDate]);
 
-  // ApexCharts অপশনস কনফিগারেশন
-  const chartOptions = {
-    chart: {
-      type: 'rangeBar',
-      toolbar: { show: false }, // টপ টুলবার হাইড করা হলো
-      zoom: { enabled: false },  // ১. জুম সম্পূর্ণ বন্ধ করা হলো
-      animations: { enabled: false },
-      selection: { enabled: false } // ১. ড্র্যাগ ও সিলেকশন সম্পূর্ণ বন্ধ
-    },
-    plotOptions: {
-      bar: {
-        horizontal: true,
-        barHeight: '55%',
-        rangeBarGroupRows: true 
-      }
-    },
-    xaxis: {
-      type: 'datetime',
-      min: minTime, 
-      max: maxTime, 
-      labels: {
-        datetimeUTC: false,
-        // ২. টাইম ১২ ঘণ্টার AM/PM ফরম্যাটে দেখানোর লজিক
-        formatter: function(value) {
-          const date = new Date(value);
-          let hours = date.getHours();
-          const ampm = hours >= 12 ? 'PM' : 'AM';
-          hours = hours % 12;
-          hours = hours ? hours : 12; // 0 টা কে ১২ বানানো
-          return hours + ampm; // যেমন: 12AM, 2PM, 6PM
-        },
-        style: {
-          colors: '#333',
-          fontSize: '12px'
-        }
-      }
-    },
-    yaxis: {
-      labels: { style: { colors: '#333', fontWeight: 'bold' } }
-    },
-    // ৩. কাস্টম ডার্ক পপআপ টুলটিপ (সব ব্লকের জন্য কাজ করবে)
-    tooltip: {
-      enabled: true,
-      custom: function({ series, seriesIndex, dataPointIndex, w }) {
-        const data = w.config.series[seriesIndex].data[dataPointIndex];
+  // ৩. প্রতি ১০ সেকেন্ড পর পর এপিআই অটো-রিফ্রেশ (Polling)
+  useEffect(() => {
+    const apiInterval = setInterval(() => {
+      fetchTrackerData(false); // ব্যাকগ্রাউন্ডে রিফ্রেশ হবে, কোনো 'Loading...' স্ক্রিন আসবে না
+    }, 10000); // ১০ সেকেন্ড পরপর ডাটাবেজ চেক করবে
+
+    return () => clearInterval(apiInterval);
+  }, [machineNumber, targetDate]);
+
+  // ৪. প্রতি সেকেন্ডে স্ক্রিনের শেষ ব্লকের মিনিট-সেকেন্ড রিয়েল-টাইমে লাইভ বাড়ানোর এফেক্ট (Live Tick)
+  useEffect(() => {
+    const clockInterval = setInterval(() => {
+      const nowMs = new Date().getTime();
+
+      setTimelineData(prevBlocks => {
+        if (!prevBlocks || prevBlocks.length === 0) return prevBlocks;
         
-        const startDate = new Date(data.y[0]);
-        const endDate = new Date(data.y[1]);
+        const updatedBlocks = [...prevBlocks];
+        const lastIndex = updatedBlocks.length - 1;
+        const lastBlock = { ...updatedBlocks[lastIndex] };
 
-        const dateOptions = { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true };
-        const startFormatted = startDate.toLocaleString('en-US', dateOptions);
-        const endFormatted = endDate.toLocaleString('en-US', dateOptions);
-
-        const diffMs = endDate - startDate;
-        const diffSec = Math.floor(diffMs / 1000);
-        let durationStr = `${diffSec}sec`;
+        // যদি শেষ ব্লকটি লাইভ ট্র্যাকিং মোডে থাকে, তবে ঘড়ির সাথে সাথে এর এন্ড-টাইম ও ডিউরেশন বাড়বে
+        if (lastBlock.isLiveBlock) {
+          lastBlock.computedEndMs = nowMs;
+          lastBlock.computedDurationMs = Math.max(nowMs - lastBlock.computedStartMs, 1000);
+          updatedBlocks[lastIndex] = lastBlock;
+        }
         
-        if (diffSec >= 60) {
-          const diffMin = Math.floor(diffSec / 60);
-          const remSec = diffSec % 60;
-          durationStr = remSec > 0 ? `${diffMin}min ${remSec}sec` : `${diffMin}min`;
-        }
+        return updatedBlocks;
+      });
+    }, 1000); // প্রতি ১ সেকেন্ডে রান হয়ে টাইম যোগ করবে
 
-        // কাস্টম টেক্সট ও কালার কন্ডিশন
-        let statusText = "Machine Off";
-        let statusColor = "#FF1A1A";
+    return () => clearInterval(clockInterval);
+  }, []);
 
-        if (data.reasonName === "Machine On") {
-          statusText = "Machine On";
-          statusColor = "#00E396";
-        } else if (data.reasonName === "No operation data") {
-          statusText = "No Operation";
-          statusColor = "#FFAAAA";
-        }
+  const totalDurationDay = 24 * 60 * 60 * 1000;
+  const timeLabels = ["12AM", "2AM", "5AM", "8AM", "10AM", "1PM", "3PM", "6PM", "9PM", "11PM"];
 
-        const reasonColor = (data.reasonName === "N/A" || data.reasonName === "No operation data") ? "#FEB019" : "#FFFFFF";
+  const formatDuration = (ms) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}min ${seconds}sec`;
+  };
 
-        return `
-          <div style="
-            background: #1C1C1E; 
-            color: #FFFFFF; 
-            padding: 12px 16px; 
-            border-radius: 8px; 
-            box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.4);
-            font-family: Arial, sans-serif;
-            font-size: 13px;
-            line-height: 1.6;
-            border: none;
-          ">
-            <div style="font-weight: bold; font-size: 14px; margin-bottom: 6px; border-bottom: 1px solid #2C2C2E; padding-bottom: 4px;">
-              Machine Status
-            </div>
-            <div>
-              <span style="color: #A5A5A5;">Status:</span> 
-              <span style="color: ${statusColor}; font-weight: bold;">${statusText}</span>
-            </div>
-            <div>
-              <span style="color: #A5A5A5;">Start:</span> ${startFormatted}
-            </div>
-            <div>
-              <span style="color: #A5A5A5;">End:</span> ${endFormatted}
-            </div>
-            <div>
-              <span style="color: #A5A5A5;">Duration:</span> ${durationStr}
-            </div>
-            <div>
-              <span style="color: #A5A5A5;">Reason:</span> 
-              <span style="color: ${reasonColor}; font-weight: bold;">${data.reasonName}</span>
-            </div>
-          </div>
-        `;
-      }
-    }
+  const formatDateTime = (ms) => {
+    const date = new Date(ms);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
   };
 
   return (
-    <div style={{ padding: '24px', fontFamily: 'Arial, sans-serif', backgroundColor: '#f8f9fa', minHeight: '100vh' }}>
-      
-      {/* ফিল্টার বার */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', background: '#fff', padding: '15px', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-        <h2 style={{ margin: 0, color: '#333', fontSize: '20px' }}>Knitting Machine NPT Tracker</h2>
+    <div className="min-h-screen bg-[#F8F9FA] p-6 font-sans text-gray-800">
+      <div className="bg-white p-6 rounded-xl shadow-sm max-w-7xl mx-auto border border-gray-100">
         
-        <div style={{ display: 'flex', gap: '15px' }}>
+        {/* হেডার পার্ট */}
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-100 pb-4 mb-6 gap-4">
           <div>
-            <label style={{ marginRight: '5px', fontWeight: 'bold', color: '#333' }}>Machine:</label>
-            <input 
-              type="text" 
-              value={machineNumber} 
-              onChange={(e) => setMachineNumber(e.target.value)}
-              style={{ padding: '6px', width: '60px', borderRadius: '4px', border: '1px solid #ccc', color: '#333', textAlign: 'center' }}
-            />
+            <h2 className="text-xl font-semibold text-gray-700">Knitting Machine NPT Tracker</h2>
+            <p className="text-xs text-green-600 font-medium animate-pulse mt-0.5">● Live Monitoring Connected</p>
           </div>
-          <div>
-            <label style={{ marginRight: '5px', fontWeight: 'bold', color: '#333' }}>Date:</label>
-            <input 
-              type="date" 
-              value={targetDate} 
-              onChange={(e) => setTargetDate(e.target.value)}
-              style={{ padding: '6px', borderRadius: '4px', border: '1px solid #ccc', color: '#333' }}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-        
-        {/* চার্ট এরিয়া */}
-        <div style={{ flex: 1, minWidth: '60%', background: '#fff', padding: '20px', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-          {loading && <p style={{ color: '#333' }}>লোড হচ্ছে...</p>}
-          {error && <p style={{ color: 'red' }}>{error}</p>}
           
-          {!loading && (
-            <Chart 
-              options={chartOptions} 
-              series={chartData} 
-              type="rangeBar" 
-              height={260} 
-            />
-          )}
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-gray-600 font-medium">Machine:</span>
+              <input 
+                type="text" 
+                value={machineNumber} 
+                onChange={(e) => setMachineNumber(e.target.value)}
+                className="border border-gray-300 w-16 p-1.5 text-center rounded-lg font-semibold text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-gray-600 font-medium">Date:</span>
+              <input 
+                type="date" 
+                value={targetDate} 
+                onChange={(e) => setTargetDate(e.target.value)}
+                className="border border-gray-300 p-1.5 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
         </div>
 
-        {/* সাইড লেজেন্ড গাইড */}
-        <div style={{ width: '280px', background: '#fff', padding: '20px', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-          <h4 style={{ margin: '0 0 15px 0', borderBottom: '1px solid #eee', paddingBottom: '8px', color: '#333' }}>Status & Reasons</h4>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {Object.keys(REASON_MAP).map((key) => (
-              <li key={key} style={{ display: 'flex', alignItems: 'center', marginBottom: '10px', fontSize: '13px', color: '#333' }}>
-                <span style={{ 
-                  display: 'inline-block', 
-                  width: '18px', 
-                  height: '18px', 
-                  backgroundColor: REASON_MAP[key].color, 
-                  borderRadius: '4px', 
-                  marginRight: '12px' 
-                }}></span>
-                {REASON_MAP[key].name}
-              </li>
-            ))}
-          </ul>
-        </div>
+        {/* মেইন গ্রিড */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          
+          {/* গ্যান্ট চার্ট এরিয়া */}
+          <div className="lg:col-span-3 border border-gray-100 rounded-xl px-6 pb-12 pt-32 bg-[#FCFDFE] relative">
+            {loading ? (
+              <div className="h-48 flex items-center justify-center text-gray-400">Loading Tracker Chart...</div>
+            ) : (
+              <div className="min-w-[750px] relative">
+                
+                <div className="flex items-center relative">
+                  <div className="w-16 text-xs font-bold text-gray-700 shrink-0">
+                    M-5
+                  </div>
 
+                  {/* টাইমলাইন মেইন ট্র্যাকবার */}
+                  <div className="flex-1 h-24 bg-gray-50 rounded-sm relative flex border border-gray-200">
+                    {timelineData.map((block, index) => {
+                      const widthPercent = (block.computedDurationMs / totalDurationDay) * 100;
+                      
+                      const statusInfo = block.isActive 
+                        ? STATUS_MAP["0"] 
+                        : (STATUS_MAP[block.reasonNumber] || { label: "No operation data", color: "#FFAB91" });
+
+                      return (
+                        <div
+                          key={index}
+                          style={{ 
+                            width: `${Math.max(widthPercent, 0.15)}%`, 
+                            backgroundColor: block.color 
+                          }}
+                          className="h-full cursor-pointer group relative"
+                        >
+                          {/* ================= ফিক্সড টুলটিপ (Hover Tooltip) ================= */}
+                          <div className="absolute -top-40 left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-[#1E1E1E] text-gray-300 text-[13px] p-4 rounded-xl shadow-[0_10px_30px_rgba(0,0,0,0.5)] z-[9999] w-64 pointer-events-none border border-gray-800">
+                            
+                            <div className="space-y-1.5">
+                              <div>
+                                <span className="text-gray-400 font-medium">Start: </span>
+                                <span className="text-gray-200 font-mono text-[12px]">{formatDateTime(block.computedStartMs)}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-400 font-medium">End: </span>
+                                <span className="text-gray-200 font-mono text-[12px]">
+                                  {block.isLiveBlock ? `${formatDateTime(block.computedEndMs)} (Running)` : formatDateTime(block.computedEndMs)}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-gray-400 font-medium">Duration: </span>
+                                <span className="text-white font-semibold">{formatDuration(block.computedDurationMs)}</span>
+                              </div>
+                              <div className="pt-0.5">
+                                <span className="text-gray-400 font-medium">Reason: </span>
+                                <span className="text-orange-400 font-medium">{statusInfo.label}</span>
+                              </div>
+                            </div>
+
+                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-[#1E1E1E]"></div>
+                          </div>
+                          {/* ========================================================================= */}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* এক্স-অক্ষ (X-Axis) টাইম লেবেল */}
+                <div className="absolute left-16 right-0 -bottom-10 flex justify-between text-xs text-gray-500 font-medium">
+                  {timeLabels.map((label, idx) => (
+                    <div key={idx} className="flex flex-col items-center">
+                      <div className="w-[1px] h-1.5 bg-gray-300 mb-1"></div>
+                      <span>{label}</span>
+                    </div>
+                  ))}
+                </div>
+
+              </div>
+            )}
+          </div>
+
+          {/* ডানপাশের স্ট্যাটাস লেজেন্ড */}
+          <div className="border border-gray-100 rounded-xl p-5 bg-white shadow-sm h-fit">
+            <h3 className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-2 mb-3">Status & Reasons</h3>
+            <div className="space-y-3">
+              {Object.entries(STATUS_MAP).map(([key, value]) => (
+                <div key={key} className="flex items-center gap-3 text-xs font-medium text-gray-600">
+                  <div 
+                    className="w-4 h-4 rounded-md shadow-sm shrink-0 border border-black/5" 
+                    style={{ backgroundColor: value.color }}
+                  ></div>
+                  <span>{value.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div>
       </div>
     </div>
   );
