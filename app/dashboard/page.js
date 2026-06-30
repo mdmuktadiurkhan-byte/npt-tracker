@@ -7,6 +7,9 @@ export default function MachineDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // আমরা শুধুমাত্র এই মেশিন আইডিটি ড্যাশবোর্ডে দেখাবো
+  const TARGET_MACHINE = "23";
+
   useEffect(() => {
     async function fetchData() {
       try {
@@ -24,10 +27,9 @@ export default function MachineDashboard() {
   }, []);
 
   // Percentage Calculation Helper Function
-  const calculatePercentages = (onTime, offTime) => {
-    // অন এবং অফ টাইম যদি স্ট্রিং আকারে থাকে (যেমন: "12" বা "12h"), তা থেকে সংখ্যা বের করার জন্য parseFloat ব্যবহার করা হয়েছে
-    const on = parseFloat(onTime) || 0;
-    const off = parseFloat(offTime) || 0;
+  const calculatePercentages = (onTimeMs, offTimeMs) => {
+    const on = onTimeMs || 0;
+    const off = offTimeMs || 0;
     const total = on + off;
 
     if (total === 0) return { onPct: '0%', offPct: '0%' };
@@ -36,6 +38,22 @@ export default function MachineDashboard() {
     const offPct = ((off / total) * 100).toFixed(1) + '%';
 
     return { onPct, offPct };
+  };
+
+  // তারিখকে মাসের নাম সহ ফরম্যাট করার হেল্পার ফাংশন (যেমন: 29 Jun 2026)
+  const formatDateWithMonthName = (dateStr) => {
+    try {
+      const date = new Date(dateStr);
+      // এখানে 'en-GB' ব্যবহার করায় দিন আগে আসবে (29 Jun 2026)
+      // আপনি যদি 'Jun 29, 2026' চান তবে 'en-US' ব্যবহার করতে পারেন
+      return date.toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric'
+      });
+    } catch (e) {
+      return dateStr; // কোনো ভুল হলে ব্যাকআপ হিসেবে আগের স্ট্রিংটাই দেখাবে
+    }
   };
 
   // Loading View
@@ -73,6 +91,24 @@ export default function MachineDashboard() {
     );
   }
 
+  // সমস্ত মেশিন আইডি থেকে ফিল্টার করে শুধু ২৩ নম্বর মেশিনের কী (Key) বের করা
+  const filteredMachineKeys = Object.keys(summary.data).filter(
+    (machineNumber) => machineNumber === TARGET_MACHINE
+  );
+
+  // যদি ডাটাতে ২৩ নম্বর মেশিন খুঁজে না পাওয়া যায়
+  if (filteredMachineKeys.length === 0) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50 p-4">
+        <div className="bg-white border border-gray-200 p-8 rounded-2xl shadow-sm text-center max-w-md">
+          <div className="text-amber-500 mb-3 text-5xl">⚠️</div>
+          <p className="text-gray-700 text-lg font-semibold">Machine {TARGET_MACHINE} Not Found</p>
+          <p className="text-gray-500 text-sm mt-1">Currently, there are no activity records available for Machine {TARGET_MACHINE}.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto bg-gray-50 min-h-screen font-sans">
       
@@ -83,7 +119,7 @@ export default function MachineDashboard() {
             Machine Activity Dashboard
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Historical overview of total ON and OFF runtime parameters per machine unit.
+            Historical overview of total ON and OFF runtime parameters for Machine {TARGET_MACHINE}.
           </p>
         </div>
         
@@ -95,89 +131,96 @@ export default function MachineDashboard() {
             </svg>
           </div>
           <div>
-            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Machines</p>
-            <p className="text-3xl font-black text-gray-800">{summary.totalMachines}</p>
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Active View</p>
+            <p className="text-3xl font-black text-gray-800">1 Machine</p>
           </div>
         </div>
       </div>
 
       {/* Structured Machine Timelines */}
       <div className="grid grid-cols-1 gap-8">
-        {Object.keys(summary.data).map((machineNumber) => (
-          <div key={machineNumber} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden transition-all hover:shadow-md">
-            
-            {/* Component Item Title */}
-            <div className="bg-gradient-to-r from-gray-50 to-white px-6 py-4 border-b border-gray-100 flex items-center gap-3">
-              <span className="relative flex h-3 w-3">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-              </span>
-              <h2 className="text-lg font-bold text-gray-700">
-                Machine ID: <span className="text-blue-600 font-mono text-xl">{machineNumber}</span>
-              </h2>
+        {filteredMachineKeys.map((machineNumber) => {
+          
+          // তারিখগুলোকে নতুন থেকে পুরানো ক্রমানুসারে (Descending) সর্ট করা হচ্ছে
+          const sortedData = [...summary.data[machineNumber]].sort(
+            (a, b) => new Date(b.date) - new Date(a.date)
+          );
+
+          return (
+            <div key={machineNumber} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden transition-all hover:shadow-md">
+              
+              {/* Component Item Title */}
+              <div className="bg-gradient-to-r from-gray-50 to-white px-6 py-4 border-b border-gray-100 flex items-center gap-3">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                </span>
+                <h2 className="text-lg font-bold text-gray-700">
+                  Machine ID: <span className="text-blue-600 font-mono text-xl">{machineNumber}</span>
+                </h2>
+              </div>
+
+              {/* Metrics Table */}
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-100">
+                  <thead className="bg-gray-50/70">
+                    <tr>
+                      <th scope="col" className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">
+                        Date
+                      </th>
+                      <th scope="col" className="px-6 py-3.5 text-left text-xs font-bold text-green-600 uppercase tracking-wider">
+                        🟢 Total ON Duration
+                      </th>
+                      <th scope="col" className="px-6 py-3.5 text-left text-xs font-bold text-red-600 uppercase tracking-wider">
+                        🔴 Total OFF Duration
+                      </th>
+                    </tr>
+                  </thead>
+                  
+                  <tbody className="bg-white divide-y divide-gray-100">
+                    {sortedData.map((row, idx) => {
+                      const { onPct, offPct } = calculatePercentages(row.onTimeMs, row.offTimeMs);
+
+                      return (
+                        <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
+                          {/* Date Output (মাসের নাম সহ ফরম্যাট করা হয়েছে) */}
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700">
+                            {formatDateWithMonthName(row.date)}
+                          </td>
+                          
+                          {/* Active ON Runtime Label & Percentage */}
+                          <td className="px-6 py-4 whitespace-nowrap text-sm">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-green-50 text-green-700 border border-green-200 shadow-2xs">
+                                {row.onTime}
+                              </span>
+                              <span className="text-xs font-semibold text-green-600 bg-green-100/50 px-2 py-0.5 rounded-md">
+                                {onPct}
+                              </span>
+                            </div>
+                          </td>
+                          
+                          {/* Inactive OFF Runtime Label & Percentage */}
+                          <td className="px-6 py-4 whitespace-nowrap text-sm">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-700 border border-red-200 shadow-2xs">
+                                {row.offTime}
+                              </span>
+                              <span className="text-xs font-semibold text-red-600 bg-red-100/50 px-2 py-0.5 rounded-md">
+                                {offPct}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
             </div>
-
-            {/* Metrics Table */}
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-100">
-                <thead className="bg-gray-50/70">
-                  <tr>
-                    <th scope="col" className="px-6 py-3.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">
-                      Date
-                    </th>
-                    <th scope="col" className="px-6 py-3.5 text-left text-xs font-bold text-green-600 uppercase tracking-wider">
-                      🟢 Total ON Duration
-                    </th>
-                    <th scope="col" className="px-6 py-3.5 text-left text-xs font-bold text-red-600 uppercase tracking-wider">
-                      🔴 Total OFF Duration
-                    </th>
-                  </tr>
-                </thead>
-                
-                <tbody className="bg-white divide-y divide-gray-100">
-                  {summary.data[machineNumber].map((row, idx) => {
-                    // প্রতিটি রো-এর জন্য পার্সেন্টেজ ক্যালকুলেট করা হচ্ছে
-                    const { onPct, offPct } = calculatePercentages(row.onTime, row.offTime);
-
-                    return (
-                      <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
-                        {/* Date Output */}
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700">
-                          {row.date}
-                        </td>
-                        
-                        {/* Active ON Runtime Label & Percentage */}
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-green-50 text-green-700 border border-green-200 shadow-2xs">
-                              {row.onTime}
-                            </span>
-                            <span className="text-xs font-semibold text-green-600 bg-green-100/50 px-2 py-0.5 rounded-md">
-                              {onPct}
-                            </span>
-                          </div>
-                        </td>
-                        
-                        {/* Inactive OFF Runtime Label & Percentage */}
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-700 border border-red-200 shadow-2xs">
-                              {row.offTime}
-                            </span>
-                            <span className="text-xs font-semibold text-red-600 bg-red-100/50 px-2 py-0.5 rounded-md">
-                              {offPct}
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-          </div>
-        ))}
+          );
+        })}
       </div>
 
     </div>
