@@ -9,7 +9,7 @@ export async function GET(request) {
     // URL থেকে machine parameter টি নেওয়া হচ্ছে (যেমন: /api/machine-logs?machine=23)
     // যদি কিছু পাস না করা হয়, তবে ডিফল্ট হিসেবে '23' নম্বর মেশিনের ডেটা দেখাবে
     const { searchParams } = new URL(request.url);
-    const machineNumber = searchParams.get('machine') || '23';
+    const machineNumber = searchParams.get('machine') || '5';
 
     // নির্দিষ্ট মেশিনের সকল ডেটা নতুন থেকে পুরাতন (Descending Order) ক্রমানুসারে খোঁজা হচ্ছে
     const logs = await db.collection('statuses')
